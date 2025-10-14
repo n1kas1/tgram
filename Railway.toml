@@ -1,0 +1,8 @@
+[build]
+builder = "NIXPACKS"
+buildCommand = ""
+
+[deploy]
+startCommand = "python -m app.main"
+restartPolicyType = "ON_FAILURE"   # перезапуск при падении
+
