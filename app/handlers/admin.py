@@ -87,7 +87,7 @@ async def new_campaign_handler(message: Message, command: CommandObject) -> None
             await message.bot.send_message(
                 uid,
                 f"📢 Новый сбор: <b>{camp.title}</b>.\n"
-                f"Ваша доля: {per_user}₽.\n"
+                f"Сколько нужно перевести: {per_user}₽.\n" 
                 "Пожалуйста, нажмите кнопку, когда переведёте сумму.",
                 reply_markup=payment_kb(camp.id, False),
                 parse_mode="HTML",
@@ -187,15 +187,15 @@ async def export_csv_handler(message: Message) -> None:
     for uid in paid_ids + unpaid_ids:
         user = user_map.get(uid)
         rows.append({
-            "тг_id": uid,
+            # "тг_id": uid,
             "Имя": user.full_name if user else "",
-            "Никнейм": user.username if user else "",
+            # "Никнейм": user.username if user else "",
             "Оплачено": "да" if uid in paid_ids else "нет",
         })
     import csv, tempfile, os
     fd, tmp_path = tempfile.mkstemp(prefix="fundbot_", suffix=".csv")
     with os.fdopen(fd, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["тг_id", "Имя", "Никнейм", "Оплачено"])
+        writer = csv.DictWriter(f, fieldnames=["Имя", "Оплачено"])
         writer.writeheader()
         writer.writerows(rows)
     await message.answer_document(FSInputFile(tmp_path), caption=f"Участники сбора {camp.title}")
@@ -258,14 +258,14 @@ async def export_unpaid_handler(message: Message) -> None:
     for uid in unpaid_ids:
         user = user_map.get(uid)
         rows.append({
-            "тг_id": uid,
+            # "тг_id": uid,
             "Имя": user.full_name if user else "",
-            "Никнейм": user.username if user else "",
+            # "Никнейм": user.username if user else "",
         })
     import csv, tempfile, os
     fd, tmp_path = tempfile.mkstemp(prefix="fundbot_unpaid_", suffix=".csv")
     with os.fdopen(fd, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["тг_id", "Имя", "Никнейм"])
+        writer = csv.DictWriter(f, fieldnames=["Имя"]) # было: writer = csv.DictWriter(f, fieldnames=["тг_id", "Имя", "Никнейм"])
         writer.writeheader()
         writer.writerows(rows)
     await message.answer_document(FSInputFile(tmp_path), caption=f"Не оплатили: {camp.title}")
