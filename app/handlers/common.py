@@ -50,7 +50,7 @@ async def start_handler(message: Message, state: FSMContext) -> None:
         )
 
     # If the user is not a financier and has no recorded name, prompt for one.
-    if not user.is_financier and not user.full_name:
+    if not user.is_financier:
         await message.answer(
             "Пожалуйста, введите ваше имя, чтобы завершить регистрацию.\n"
             "Это имя будет видно финансисту."
