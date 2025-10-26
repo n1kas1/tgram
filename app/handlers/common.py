@@ -23,7 +23,48 @@ from ..models import User
 
 
 router = Router()
-
+names = [
+    "Агеев",
+    "Ананич",
+    "Атаману",
+    "Бакиров",
+    "Балажегитов",
+    "Баринов",
+    "Болтышев",
+    "Васьков",
+    "Ведяшкин",
+    "Воронов",
+    "Вчерашний",
+    "Гончаров",
+    "Гололобов",
+    "Дёмин",
+    "Дуняшев",
+    "Дьячков",
+    "Ефимов",
+    "Забрамский",
+    "Зданович",
+    "Золкин",
+    "Иванов",
+    "Камаев",
+    "Кирюхин",
+    "Коваль",
+    "Куранов",
+    "Куцев",
+    "Матковский",
+    "Никифоров",
+    "Пилюгаев",
+    "Плахов",
+    "Побережный",
+    "Претцер",
+    "Рыбак",
+    "Сакунов",
+    "Семерьянов",
+    "Толкачев",
+    "Хлебников",
+    "Шаповалов",
+    "Шмыков",
+    "Щекудов"
+]
 
 class RegistrationState(StatesGroup):
     """FSM states for user registration."""
@@ -50,7 +91,7 @@ async def start_handler(message: Message, state: FSMContext) -> None:
         )
 
     # If the user is not a financier and has no recorded name, prompt for one.
-    if not user.is_financier:
+    if not user.is_financier:  # and not user.full_name
         await message.answer(
             "Пожалуйста, введите ваше имя, чтобы завершить регистрацию.\n"
             "Это имя будет видно финансисту."
@@ -59,25 +100,36 @@ async def start_handler(message: Message, state: FSMContext) -> None:
         return
 
     # Otherwise, send a greeting and basic instructions.
+
+    # с нашими изменениями это у нас не выводится
+    # ----------------------------------------------
     await message.answer(
         "Привет!\n"
         "Используйте команду /status, чтобы узнать свой статус в активном сборе.\n"
         "Список команд: /help"
     )
+    # ----------------------------------------------
 
 
 @router.message(RegistrationState.awaiting_name)
 async def process_name(message: Message, state: FSMContext) -> None:
     """Process the user's reply with their full name."""
     full_name = message.text.strip()
+    check = False
     # Update the user record with the provided name
     async with Session() as db:
         u = await db.scalar(select(User).where(User.id == message.from_user.id))
-        if u:
+        if u in names:
             u.full_name = full_name
+            check = True
             await db.commit()
-    await message.answer("Спасибо! Ваше имя сохранено. Теперь вы можете пользоваться ботом.")
-    await state.clear()
+
+    if check:
+        await message.answer("Ваше имя сохранено. Теперь вы можете пользоваться ботом.")
+        await state.clear()
+
+    else:
+        await message.answer("Попробуйте ещё раз\n Подсказка: вы должны ввести Вашу фамилию)")
 
 
 @router.message(F.text == "/status")
