@@ -26,7 +26,7 @@ router = Router()
 names = [
     "Агеев",
     "Ананич",
-    "Атаману",
+    "Атаманчук",
     "Бакиров",
     "Балажегитов",
     "Баринов",
@@ -65,6 +65,7 @@ names = [
     "Шмыков",
     "Щекудов"
 ]
+is_registered = []
 
 class RegistrationState(StatesGroup):
     """FSM states for user registration."""
@@ -119,17 +120,19 @@ async def process_name(message: Message, state: FSMContext) -> None:
     # Update the user record with the provided name
     async with Session() as db:
         u = await db.scalar(select(User).where(User.id == message.from_user.id))
-        if u and full_name in names:
+        if u and (full_name in names) and (not (full_name in is_registered)): # проверка на зарегистрированного пользователя
             u.full_name = full_name
             check = True
             await db.commit()
 
     if check:
         await message.answer("Ваше имя сохранено. Теперь вы можете пользоваться ботом.")
+        is_registered.append(full_name)
         await state.clear()
-
+    elif full_name in is_registered:
+        await message.answer(f"{full_name} уже есть.\nПопробуй ещё раз")
     else:
-        await message.answer("Попробуйте ещё раз\n Подсказка: вы должны ввести Вашу фамилию)")
+        await message.answer("Попробуйте ещё раз\nПодсказка: вы должны ввести Вашу фамилию)")
 
 
 @router.message(F.text == "/status")
@@ -200,3 +203,12 @@ async def help_handler(message: Message) -> None:
             "/message &lt;текст&gt; – отправить рассылку всем пользователям",
         ])
     await message.answer("\n".join(lines), parse_mode="HTML")
+
+@router.message(Command("admin_message"))
+async def message_to_admin_handler(message: Message, command: CommandObject) -> None:
+    text = (command.args or "").strip()
+    if not text:
+        await message.answer("Использование: /message <текст сообщения>")
+        return
+    await message.bot.send_message(589625614, text, parse_mode="HTML") # вообще в дальнейшем сделать бы эти цифры в env и импортировать их из env
+    await message.answer(f"Админ получил ваше сообщение^^)")
