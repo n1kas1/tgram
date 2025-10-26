@@ -119,7 +119,7 @@ async def process_name(message: Message, state: FSMContext) -> None:
     # Update the user record with the provided name
     async with Session() as db:
         u = await db.scalar(select(User).where(User.id == message.from_user.id))
-        if u in names:
+        if u and full_name in names:
             u.full_name = full_name
             check = True
             await db.commit()
