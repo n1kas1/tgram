@@ -93,17 +93,22 @@ async def start_handler(message: Message, state: FSMContext) -> None:
 
     # If the user is not a financier and has no recorded name, prompt for one.
     if not user.is_financier:  # and not user.full_name
-        await message.answer(
-            "Пожалуйста, введите ваше имя, чтобы завершить регистрацию.\n"
-            "Это имя будет видно финансисту."
-        )
-        await state.set_state(RegistrationState.awaiting_name)
-        return
+        async with Session() as db:
+            u = await db.scalar(select(User).where(User.id == message.from_user.id))
+            if u.full_name is None:
+
+                await message.answer(
+                    "Пожалуйста, введите ваше имя, чтобы завершить регистрацию.\n"
+                    "Это имя будет видно финансисту."
+                )
+                await state.set_state(RegistrationState.awaiting_name)
+                return
 
     # Otherwise, send a greeting and basic instructions.
 
     # с нашими изменениями это у нас не выводится
     # ----------------------------------------------
+
     await message.answer(
         "Привет!\n"
         "Используйте команду /status, чтобы узнать свой статус в активном сборе.\n"
