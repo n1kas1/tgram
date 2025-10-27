@@ -187,6 +187,7 @@ async def help_handler(message: Message) -> None:
         "<b>Доступные команды:</b>",
         "/start – начать или перезапустить диалог", 
         "/status – узнать ваш статус в текущем сборе",
+        "/admin_message - написать админу",
         "/help – вывести этот список команд",
     ]
     if is_financier:
@@ -207,8 +208,11 @@ async def help_handler(message: Message) -> None:
 @router.message(Command("admin_message"))
 async def message_to_admin_handler(message: Message, command: CommandObject) -> None:
     text = (command.args or "").strip()
+    async with Session() as db:
+        u = await db.scalar(select(User).where(User.id == message.from_user.id))
+
     if not text:
-        await message.answer("Использование: /message <текст сообщения>")
+        await message.answer("Использование: /admin_message <текст сообщения>")
         return
-    await message.bot.send_message(589625614, text, parse_mode="HTML") # вообще в дальнейшем сделать бы эти цифры в env и импортировать их из env
+    await message.bot.send_message(589625614, f"Сообщение от пользователя {u.full_name}:\n{text}", parse_mode="HTML") # вообще в дальнейшем сделать бы эти цифры в env и импортировать их из env
     await message.answer(f"Админ получил ваше сообщение^^)")
