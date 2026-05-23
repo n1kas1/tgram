@@ -15,11 +15,20 @@ from .migrate import run_migrations
 # Create the async engine using the DATABASE_URL from settings.  We set
 # ``echo=False`` to suppress verbose SQL logging and ``pool_pre_ping=True`` to
 # ensure stale connections are detected and refreshed automatically.
+#
+# When connecting through a connection pooler (e.g. Supabase Supavisor / pgbouncer)
+# asyncpg's server-side prepared-statement cache causes errors, so it is disabled
+# for the asyncpg driver. This is harmless for direct connections too.
+_connect_args = {}
+if settings.DATABASE_URL.startswith("postgresql+asyncpg"):
+    _connect_args = {"statement_cache_size": 0}
+
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,
     pool_pre_ping=True,
     future=True,
+    connect_args=_connect_args,
 )
 
 # Each handler/request should obtain its own session instance.  The
