@@ -1,0 +1,31 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: fundbot
+      POSTGRES_PASSWORD: fundbot
+      POSTGRES_DB: fundbot
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fundbot -d fundbot"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+
+  bot:
+    build: .
+    env_file:
+      - .env
+    environment:
+      # Points at the local Postgres service above; overrides any DATABASE_URL in .env.
+      DATABASE_URL: postgresql+asyncpg://fundbot:fundbot@db:5432/fundbot
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
