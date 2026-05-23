@@ -1,13 +1,17 @@
 """Handlers for common user commands and registration flow.
 
 This module defines handlers for commands available to all users, such as
-``/start`` and ``/status``.  It also implements a simple finite state
-machine using aiogram's FSM context to prompt users for their full name on
-first registration (except for financiers).  The collected name is stored
-in the ``users.full_name`` column.
+``/start`` and ``/status``.  It implements a small finite state machine using
+aiogram's FSM context to prompt non-financier users for their surname on first
+registration.  The surname is validated against a financier-managed allowlist
+(``allowed_names`` table) and must be unique among registered users; it is then
+stored in the ``users.full_name`` column.
 """
 
 from __future__ import annotations
+
+import html
+import logging
 
 from aiogram import Router, F
 from aiogram.types import Message
@@ -17,71 +21,28 @@ from aiogram.fsm.state import StatesGroup, State
 from sqlalchemy import select
 
 from ..db import Session
-from ..repo import upsert_user, user_status
+from ..repo import upsert_user, user_status, is_name_allowed, is_name_taken
 from ..config import settings
 from ..models import User
 
 
+logger = logging.getLogger(__name__)
 router = Router()
-names = [
-    "Агеев",
-    "Ананич",
-    "Атаманчук",
-    "Бакиров",
-    "Балажегитов",
-    "Баринов",
-    "Болтышев",
-    "Васьков",
-    "Ведяшкин",
-    "Воронов",
-    "Вчерашний",
-    "Гончаров",
-    "Гололобов",
-    "Дёмин",
-    "Дуняшев",
-    "Дьячков",
-    "Ефимов",
-    "Забрамский",
-    "Зданович",
-    "Золкин",
-    "Иванов",
-    "Камаев",
-    "Кирюхин",
-    "Коваль",
-    "Куранов",
-    "Куцев",
-    "Матковский",
-    "Никифоров",
-    "Пилюгаев",
-    "Плахов",
-    "Побережный",
-    "Претцер",
-    "Рыбак",
-    "Сакунов",
-    "Семерьянов",
-    "Толкачев",
-    "Хлебников",
-    "Шаповалов",
-    "Шмыков",
-    "Щекудов"
-]
-is_registered = []
+
 
 class RegistrationState(StatesGroup):
     """FSM states for user registration."""
     awaiting_name = State()
 
 
-@router.message(F.text == "/start")
+@router.message(Command("start"))
 async def start_handler(message: Message, state: FSMContext) -> None:
     """Handle the ``/start`` command.
 
-    Upon receiving ``/start``, the bot inserts or updates the user in the
-    database.  If the user is not a financier and has not provided a full
-    name yet, the bot prompts them to supply one and sets the FSM state
-    accordingly.  Otherwise, a standard greeting is sent.
+    The user is inserted or updated in the database.  If they are not a
+    financier and have not yet registered a surname, the bot prompts them for
+    one and enters the registration state.  Otherwise it sends a greeting.
     """
-    # Upsert the user, recording their username and full name if present.
     async with Session() as db:
         user = await upsert_user(
             db,
@@ -91,112 +52,97 @@ async def start_handler(message: Message, state: FSMContext) -> None:
             set(settings.FINANCIERS),
         )
 
-    # If the user is not a financier and has no recorded name, prompt for one.
-    if not user.is_financier:  # and not user.full_name
-        async with Session() as db:
-            u = await db.scalar(select(User).where(User.id == message.from_user.id))
-            if u.full_name is None:
-
-                await message.answer(
-                    "Пожалуйста, введите ваше имя, чтобы завершить регистрацию.\n"
-                    "Это имя будет видно финансисту."
-                )
-                await state.set_state(RegistrationState.awaiting_name)
-                return
-
-    # Otherwise, send a greeting and basic instructions.
-
-    # с нашими изменениями это у нас не выводится
-    # ----------------------------------------------
+    # Non-financiers must register a surname before using the bot.
+    if not user.is_financier and not user.full_name:
+        await message.answer(
+            "Пожалуйста, введите вашу фамилию, чтобы завершить регистрацию.\n"
+            "Она будет видна финансисту."
+        )
+        await state.set_state(RegistrationState.awaiting_name)
+        return
 
     await message.answer(
         "Привет!\n"
         "Используйте команду /status, чтобы узнать свой статус в активном сборе.\n"
         "Список команд: /help"
     )
-    # ----------------------------------------------
 
 
 @router.message(RegistrationState.awaiting_name)
 async def process_name(message: Message, state: FSMContext) -> None:
-    """Process the user's reply with their full name."""
-    full_name = message.text.strip()
-    check = False
-    # Update the user record with the provided name
+    """Process the user's reply with their surname."""
+    surname = (message.text or "").strip()
+    if not surname:
+        await message.answer("Пустое имя. Попробуйте ещё раз.")
+        return
+
     async with Session() as db:
         u = await db.scalar(select(User).where(User.id == message.from_user.id))
-        if u and (full_name in names) and (not (full_name in is_registered)): # проверка на зарегистрированного пользователя
-            u.full_name = full_name
-            check = True
-            await db.commit()
+        if u is None:
+            await message.answer("Сначала отправьте /start.")
+            await state.clear()
+            return
+        if not await is_name_allowed(db, surname):
+            await message.answer(
+                "Такой фамилии нет в списке.\n"
+                "Проверьте написание или обратитесь к финансисту."
+            )
+            return
+        if await is_name_taken(db, surname):
+            await message.answer(f"Фамилия «{surname}» уже занята.\nПопробуйте ещё раз.")
+            return
+        u.full_name = surname
+        await db.commit()
 
-    if check:
-        await message.answer("Ваше имя сохранено. Теперь вы можете пользоваться ботом.")
-        is_registered.append(full_name)
-        await state.clear()
-    elif full_name in is_registered:
-        await message.answer(f"{full_name} уже есть.\nПопробуй ещё раз")
-    else:
-        await message.answer("Попробуйте ещё раз\nПодсказка: вы должны ввести Вашу фамилию)")
+    await message.answer("Ваша фамилия сохранена. Теперь вы можете пользоваться ботом.")
+    await state.clear()
 
 
-@router.message(F.text == "/status")
+@router.message(Command("status"))
 async def status_handler(message: Message) -> None:
     """Show the user's status in the active campaign."""
     async with Session() as db:
         camp, member, user, per_user = await user_status(db, message.from_user.id)
 
-    # Determine the user's role (financier or participant)
     role = None
     if user is not None:
         role = "финансист" if user.is_financier else "участник"
     role_line = f"Ваш статус: {role.capitalize()}" if role else ""
 
-    # No active campaign
     if not camp:
-        await message.answer(
-            "Активного сбора нет.\n"
-            f"{role_line}"
-        )
+        await message.answer("Активного сбора нет.\n" f"{role_line}")
         return
-    # User is not part of the campaign
+    title = html.escape(camp.title)
     if member is None:
         await message.answer(
-            f"Текущий сбор: {camp.title}\n"
-            f"Вы не входите в список участников текущего сбора.\n"
+            f"Текущий сбор: {title}\n"
+            "Вы не входите в список участников текущего сбора.\n"
             f"{role_line}"
         )
         return
-    # User participates in the campaign
     status_text = "оплачено" if member.has_paid else "ещё не оплачено"
     await message.answer(
-        f"Текущий сбор: {camp.title}\n"
+        f"Текущий сбор: {title}\n"
         f"Ваша доля: {per_user}₽\n"
         f"Статус оплаты: {status_text}\n"
         f"{role_line}"
     )
 
 
-# ---------------------------------------------------------------------------
-# Help command
-
 @router.message(Command("help"))
 async def help_handler(message: Message) -> None:
     """Send a list of available commands depending on the user's role."""
-    # Determine if the user is a financier
     async with Session() as db:
         _, _, user, _ = await user_status(db, message.from_user.id)
     is_financier = bool(user and user.is_financier)
-    # Base commands available to all users
     lines = [
         "<b>Доступные команды:</b>",
-        "/start – начать или перезапустить диалог", 
+        "/start – начать или перезапустить диалог",
         "/status – узнать ваш статус в текущем сборе",
-        "/admin_message - написать админу",
+        "/admin_message &lt;текст&gt; – написать финансисту",
         "/help – вывести этот список команд",
     ]
     if is_financier:
-        # Additional commands for financiers
         lines.extend([
             "\n<b>Команды финансиста:</b>",
             "/new &lt;сумма&gt; &lt;название&gt; – создать новый сбор",
@@ -207,17 +153,33 @@ async def help_handler(message: Message) -> None:
             "/unpaid – экспортировать CSV тех, кто не оплатил",
             "/remind – отправить напоминание тем, кто не оплатил",
             "/message &lt;текст&gt; – отправить рассылку всем пользователям",
+            "/names – показать список разрешённых фамилий",
+            "/addname &lt;фамилия&gt; – добавить фамилию в список",
+            "/delname &lt;фамилия&gt; – удалить фамилию из списка",
         ])
-    await message.answer("\n".join(lines), parse_mode="HTML")
+    await message.answer("\n".join(lines))
+
 
 @router.message(Command("admin_message"))
 async def message_to_admin_handler(message: Message, command: CommandObject) -> None:
     text = (command.args or "").strip()
-    async with Session() as db:
-        u = await db.scalar(select(User).where(User.id == message.from_user.id))
-
     if not text:
         await message.answer("Использование: /admin_message <текст сообщения>")
         return
-    await message.bot.send_message(589625614, f"Сообщение от пользователя {u.full_name}:\n{text}", parse_mode="HTML") # вообще в дальнейшем сделать бы эти цифры в env и импортировать их из env
-    await message.answer(f"Админ получил ваше сообщение^^)")
+
+    admin_id = settings.ADMIN_TG_ID
+    if admin_id is None:
+        await message.answer("Получатель сообщений не настроен. Обратитесь к администратору.")
+        logger.warning("admin_message: ADMIN_TG_ID is not configured")
+        return
+
+    async with Session() as db:
+        u = await db.scalar(select(User).where(User.id == message.from_user.id))
+    sender = (u.full_name if u and u.full_name else None) or (
+        message.from_user.full_name or str(message.from_user.id)
+    )
+    await message.bot.send_message(
+        admin_id,
+        f"Сообщение от пользователя {html.escape(sender)}:\n{html.escape(text)}",
+    )
+    await message.answer("Финансист получил ваше сообщение ^^")

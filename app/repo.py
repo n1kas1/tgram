@@ -10,38 +10,85 @@ without changing the rest of the codebase.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Iterable, Tuple, Optional, List
+from typing import Tuple, Optional, List
 
-from sqlalchemy import select, func, update
+from sqlalchemy import select, func, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import User, Campaign, CampaignMember
+from .models import User, Campaign, CampaignMember, AllowedName
 
 
-async def upsert_user(db: AsyncSession, tg_id: int, username: Optional[str], full_name: Optional[str], financiers: set[int]) -> User:
+async def upsert_user(db: AsyncSession, tg_id: int, username: Optional[str], tg_name: Optional[str], financiers: set[int]) -> User:
     """Insert or update a user record.
 
-    If the user does not already exist in the database, a new record is
-    created.  Existing users have their username updated.  The
-    ``full_name`` is only set if it is not already present; this prevents
-    overwriting a name the user has provided via the registration flow.  The
-    ``is_financier`` flag is set if the Telegram ID appears in the provided
-    ``financiers`` set.
+    If the user does not already exist, a new record is created.  ``username``
+    and the Telegram display name (``tg_name``) are kept in sync on every call.
+    The ``full_name`` (the surname the participant registers with) is never
+    touched here — it is set only via the registration flow.  The
+    ``is_financier`` flag is set if the Telegram ID appears in ``financiers``.
     """
     u = await db.scalar(select(User).where(User.id == tg_id))
     if u is None:
-        u = User(id=tg_id, username=username, full_name=full_name, is_financier=(tg_id in financiers))
+        u = User(id=tg_id, username=username, tg_name=tg_name, is_financier=(tg_id in financiers))
         db.add(u)
     else:
         u.username = username
-        # only set full_name if we have a new value and the old value is empty
-        if full_name and not u.full_name:
-            u.full_name = full_name
+        u.tg_name = tg_name
         # don't downgrade a financier if already true
         if tg_id in financiers:
             u.is_financier = True
     await db.commit()
     return u
+
+
+async def is_name_allowed(db: AsyncSession, name: str) -> bool:
+    """Return True if ``name`` is in the financier-managed allowlist."""
+    found = await db.scalar(select(AllowedName.id).where(AllowedName.name == name))
+    return found is not None
+
+
+async def is_name_taken(db: AsyncSession, name: str) -> bool:
+    """Return True if another user has already registered with ``name``."""
+    found = await db.scalar(select(User.id).where(User.full_name == name))
+    return found is not None
+
+
+async def add_allowed_name(db: AsyncSession, name: str) -> bool:
+    """Add a surname to the allowlist. Returns False if it already exists."""
+    if await is_name_allowed(db, name):
+        return False
+    db.add(AllowedName(name=name))
+    await db.commit()
+    return True
+
+
+async def remove_allowed_name(db: AsyncSession, name: str) -> bool:
+    """Remove a surname from the allowlist. Returns False if it was absent."""
+    if not await is_name_allowed(db, name):
+        return False
+    await db.execute(delete(AllowedName).where(AllowedName.name == name))
+    await db.commit()
+    return True
+
+
+async def list_allowed_names(db: AsyncSession) -> list[str]:
+    """Return all allowed surnames sorted alphabetically."""
+    res = await db.execute(select(AllowedName.name).order_by(AllowedName.name))
+    return [row[0] for row in res.all()]
+
+
+async def seed_allowed_names(db: AsyncSession, names: list[str]) -> int:
+    """Seed the allowlist with ``names`` if it is currently empty.
+
+    Returns the number of names inserted (0 if the table already had data).
+    """
+    existing = await db.scalar(select(func.count(AllowedName.id)))
+    if existing:
+        return 0
+    for name in names:
+        db.add(AllowedName(name=name))
+    await db.commit()
+    return len(names)
 
 
 async def get_all_users(db: AsyncSession) -> list[User]:

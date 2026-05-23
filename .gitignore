@@ -1,2 +1,5 @@
 .env
 Railway.toml
+__pycache__/
+*.pyc
+.idea/

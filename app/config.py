@@ -62,6 +62,21 @@ class Settings:
     # pauses in between helps avoid hitting those limits.
     BATCH: int = int(os.getenv("BROADCAST_BATCH", "80"))
 
+    @property
+    def ADMIN_TG_ID(self) -> int | None:
+        """Telegram ID that receives ``/admin_message`` notes.
+
+        Falls back to the first configured financier when ``ADMIN_TG_ID`` is
+        not set explicitly.
+        """
+        raw = os.getenv("ADMIN_TG_ID", "").strip()
+        if raw:
+            try:
+                return int(raw)
+            except ValueError:
+                pass
+        return self.FINANCIERS[0] if self.FINANCIERS else None
+
 
 # Expose a single settings instance to be imported elsewhere.  Since the
 # dataclass fields default to reading from environment variables, simply

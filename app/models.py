@@ -46,6 +46,10 @@ class User(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     # Use Optional[str] instead of the "|" union syntax for Python 3.9 compatibility
     username: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # Display name taken from the Telegram profile (informational only).
+    tg_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    # Surname entered by the participant during registration; stays NULL until
+    # the user completes the registration flow.
     full_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     is_financier: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -89,3 +93,17 @@ class CampaignMember(Base):
     has_paid: Mapped[bool] = mapped_column(Boolean, default=False)
     # Use Optional[datetime] instead of union syntax for Python 3.9 compatibility
     paid_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AllowedName(Base):
+    """A surname that participants are allowed to register with.
+
+    The list is managed by financiers at runtime (``/addname`` / ``/delname``)
+    so that onboarding a new colleague does not require a code change.
+    """
+
+    __tablename__ = "allowed_names"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(128), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
