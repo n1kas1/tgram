@@ -10,6 +10,7 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from .config import settings
 from .models import Base
+from .migrate import run_migrations
 
 # Create the async engine using the DATABASE_URL from settings.  We set
 # ``echo=False`` to suppress verbose SQL logging and ``pool_pre_ping=True`` to
@@ -36,3 +37,4 @@ async def init_models() -> None:
     """
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await run_migrations(conn)
