@@ -19,6 +19,7 @@ from .config import settings
 from .db import init_models, Session, engine
 from .repo import seed_allowed_names
 from .seed_names import SEED_NAMES
+from .scheduler import reminder_loop
 from .handlers import common, admin, payments
 
 
@@ -58,9 +59,15 @@ async def main() -> None:
     dp.include_router(payments.router)
 
     logger.info("Bot started (polling).")
+    reminder_task = asyncio.create_task(reminder_loop(bot))
     try:
         await dp.start_polling(bot)
     finally:
+        reminder_task.cancel()
+        try:
+            await reminder_task
+        except asyncio.CancelledError:
+            pass
         await bot.session.close()
         await engine.dispose()
         logger.info("Bot stopped; connections closed.")

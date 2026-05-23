@@ -12,7 +12,7 @@ import csv
 import html
 import os
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List
 
 from aiogram import Router
@@ -24,17 +24,25 @@ from ..db import Session
 from ..repo import (
     create_campaign,
     campaign_stats,
-    list_paid_unpaid,
+    list_by_status,
+    list_outstanding,
     get_active_campaign,
     close_active_campaign,
     get_all_users,
     add_allowed_name,
     remove_allowed_name,
     list_allowed_names,
+    get_setting,
+    set_setting,
+    set_campaign_due_date,
+    list_campaigns,
+    collected_amount,
+    user_payment_history,
 )
 from ..keyboards import payment_kb
-from ..models import User
+from ..models import User, PAYMENT_NONE
 from ..utils import broadcast
+from ..reports import build_excel_report
 
 
 router = Router()
@@ -84,6 +92,7 @@ async def new_campaign_handler(message: Message, command: CommandObject) -> None
             )
             return
         camp, users_ids, per_user = await create_campaign(db, title, total, message.from_user.id)
+        requisites = await get_setting(db, "requisites")
 
     safe_title = html.escape(camp.title)
     await message.answer(
@@ -92,13 +101,19 @@ async def new_campaign_handler(message: Message, command: CommandObject) -> None
         "Рассылаю уведомления...",
     )
 
+    notice = (
+        f"📢 Новый сбор: <b>{safe_title}</b>.\n"
+        f"Сколько нужно перевести: {per_user}₽.\n"
+    )
+    if requisites:
+        notice += f"Реквизиты:\n{html.escape(requisites)}\n"
+    notice += "Пожалуйста, нажмите кнопку, когда переведёте сумму."
+
     sent = await broadcast(
         message.bot,
         users_ids,
-        f"📢 Новый сбор: <b>{safe_title}</b>.\n"
-        f"Сколько нужно перевести: {per_user}₽.\n"
-        "Пожалуйста, нажмите кнопку, когда переведёте сумму.",
-        reply_markup=payment_kb(camp.id, False),
+        notice,
+        reply_markup=payment_kb(camp.id, PAYMENT_NONE),
     )
     await message.answer(f"Уведомления отправлены: {sent}/{len(users_ids)}")
 
@@ -114,17 +129,22 @@ async def dashboard_handler(message: Message) -> None:
         if not camp:
             await message.answer("Активного сбора нет.")
             return
-        total, paid_count, unpaid_count = await campaign_stats(db, camp.id)
-        paid_ids, unpaid_ids = await list_paid_unpaid(db, camp.id)
+        total, confirmed, claimed, unpaid = await campaign_stats(db, camp.id)
+        confirmed_ids, claimed_ids, unpaid_ids = await list_by_status(db, camp.id)
         all_users = await get_all_users(db)
         user_map = {u.id: u for u in all_users}
 
-    remain = max(0, camp.total_amount - paid_count * camp.per_user_amount)
+    remain = max(0, camp.total_amount - confirmed * camp.per_user_amount)
+    deadline_line = ""
+    if camp.due_date:
+        deadline_line = f"\nСрок: {camp.due_date.strftime('%d.%m.%Y')}"
     summary = (
-        f"📊 Сбор: <b>{html.escape(camp.title)}</b> ({camp.total_amount}₽)\n"
+        f"📊 Сбор: <b>{html.escape(camp.title)}</b> ({camp.total_amount}₽)"
+        f"{deadline_line}\n"
         f"Участников: {total}\n"
-        f"Оплатили: {paid_count}\n"
-        f"Не оплатили: {unpaid_count}\n"
+        f"Подтверждено: {confirmed}\n"
+        f"Ожидают подтверждения: {claimed}\n"
+        f"Не оплатили: {unpaid}\n"
         f"Осталось собрать ≈ {remain}₽"
     )
     await message.answer(summary)
@@ -144,7 +164,8 @@ async def dashboard_handler(message: Message) -> None:
             chunk = lines[i : i + chunk_size]
             await message.answer(f"{title}:\n" + "\n".join(chunk))
 
-    await send_list("Оплатили", paid_ids)
+    await send_list("Подтверждено", confirmed_ids)
+    await send_list("Ожидают подтверждения", claimed_ids)
     await send_list("Не оплатили", unpaid_ids)
 
 
@@ -188,17 +209,23 @@ async def export_csv_handler(message: Message) -> None:
             return
         all_users = await get_all_users(db)
         user_map = {u.id: u for u in all_users}
-        paid_ids, unpaid_ids = await list_paid_unpaid(db, camp.id)
-    paid_set = set(paid_ids)
+        confirmed_ids, claimed_ids, unpaid_ids = await list_by_status(db, camp.id)
+    status_label = {}
+    for uid in confirmed_ids:
+        status_label[uid] = "подтверждено"
+    for uid in claimed_ids:
+        status_label[uid] = "ожидает подтверждения"
+    for uid in unpaid_ids:
+        status_label[uid] = "не оплачено"
     rows = []
-    for uid in paid_ids + unpaid_ids:
+    for uid in confirmed_ids + claimed_ids + unpaid_ids:
         user = user_map.get(uid)
         rows.append({
             "Имя": user.full_name if user else "",
-            "Оплачено": "да" if uid in paid_set else "нет",
+            "Статус": status_label.get(uid, ""),
         })
     await _send_csv(
-        message, rows, ["Имя", "Оплачено"], "fundbot_", f"Участники сбора {camp.title}"
+        message, rows, ["Имя", "Статус"], "fundbot_", f"Участники сбора {camp.title}"
     )
 
 
@@ -242,13 +269,13 @@ async def export_unpaid_handler(message: Message) -> None:
             return
         all_users = await get_all_users(db)
         user_map = {u.id: u for u in all_users}
-        _, unpaid_ids = await list_paid_unpaid(db, camp.id)
-    if not unpaid_ids:
-        await message.answer("Все участники оплатили.")
+        outstanding_ids = await list_outstanding(db, camp.id)
+    if not outstanding_ids:
+        await message.answer("Все оплаты подтверждены.")
         return
-    rows = [{"Имя": (user_map.get(uid).full_name if user_map.get(uid) else "")} for uid in unpaid_ids]
+    rows = [{"Имя": (user_map.get(uid).full_name if user_map.get(uid) else "")} for uid in outstanding_ids]
     await _send_csv(
-        message, rows, ["Имя"], "fundbot_unpaid_", f"Не оплатили: {camp.title}"
+        message, rows, ["Имя"], "fundbot_unpaid_", f"Не подтверждено: {camp.title}"
     )
 
 
@@ -322,17 +349,20 @@ async def remind_unpaid_handler(message: Message) -> None:
         if not camp:
             await message.answer("Активного сбора нет.")
             return
-        _, unpaid_ids = await list_paid_unpaid(db, camp.id)
+        outstanding_ids = await list_outstanding(db, camp.id)
+        requisites = await get_setting(db, "requisites")
 
-    if not unpaid_ids:
-        await message.answer("Все участники уже отметили оплату. Напоминания не требуются.")
+    if not outstanding_ids:
+        await message.answer("Все оплаты подтверждены. Напоминания не требуются.")
         return
     reminder_text = (
         f"Напоминание об активном сборе <b>{html.escape(camp.title)}</b>.\n"
         f"Пожалуйста, переведите вашу долю ({camp.per_user_amount}₽) и отметьте это кнопкой в боте."
     )
-    sent = await broadcast(message.bot, unpaid_ids, reminder_text)
-    await message.answer(f"Напоминания отправлены: {sent}/{len(unpaid_ids)}")
+    if requisites:
+        reminder_text += f"\nРеквизиты:\n{html.escape(requisites)}"
+    sent = await broadcast(message.bot, outstanding_ids, reminder_text)
+    await message.answer(f"Напоминания отправлены: {sent}/{len(outstanding_ids)}")
 
 
 @router.message(Command("message"))
@@ -357,3 +387,121 @@ async def broadcast_message_handler(message: Message, command: CommandObject) ->
         return
     sent = await broadcast(message.bot, [u.id for u in users], text)
     await message.answer(f"Рассылка завершена: {sent}/{len(users)} получателей.")
+
+
+# ---------------------------------------------------------------------------
+# Requisites, deadline, history and reports
+
+
+@router.message(Command("setrequisites"))
+async def set_requisites_handler(message: Message, command: CommandObject) -> None:
+    """Set the payment requisites shown to participants (or clear them)."""
+    if not is_financier(message.from_user.id):
+        await message.answer("Недоступно.")
+        return
+    text = (command.args or "").strip()
+    async with Session() as db:
+        await set_setting(db, "requisites", text)
+    if text:
+        await message.answer(f"Реквизиты сохранены:\n{html.escape(text)}")
+    else:
+        await message.answer("Реквизиты очищены.")
+
+
+@router.message(Command("deadline"))
+async def deadline_handler(message: Message, command: CommandObject) -> None:
+    """Set the deadline of the active campaign. Usage: /deadline ДД.ММ.ГГГГ."""
+    if not is_financier(message.from_user.id):
+        await message.answer("Недоступно.")
+        return
+    raw = (command.args or "").strip()
+    if not raw:
+        await message.answer("Использование: /deadline ДД.ММ.ГГГГ (или /deadline -, чтобы убрать)")
+        return
+    async with Session() as db:
+        camp = await get_active_campaign(db)
+        if not camp:
+            await message.answer("Активного сбора нет.")
+            return
+        if raw == "-":
+            await set_campaign_due_date(db, camp.id, None)
+            await message.answer("Срок снят.")
+            return
+        try:
+            due = datetime.strptime(raw, "%d.%m.%Y").replace(tzinfo=timezone.utc)
+        except ValueError:
+            await message.answer("Неверная дата. Пример: /deadline 31.12.2026")
+            return
+        await set_campaign_due_date(db, camp.id, due)
+    await message.answer(f"Срок сбора установлен: {due.strftime('%d.%m.%Y')}")
+
+
+@router.message(Command("history"))
+async def history_handler(message: Message) -> None:
+    """Show past campaigns with collected amounts."""
+    if not is_financier(message.from_user.id):
+        await message.answer("Недоступно.")
+        return
+    async with Session() as db:
+        camps = await list_campaigns(db, limit=20)
+        if not camps:
+            await message.answer("Сборов ещё не было.")
+            return
+        lines = ["<b>История сборов:</b>"]
+        for c in camps:
+            collected = await collected_amount(db, c)
+            state = "активен" if c.is_active else "закрыт"
+            date = c.created_at.strftime("%d.%m.%Y") if c.created_at else ""
+            lines.append(
+                f"• {html.escape(c.title)} — собрано {collected}/{c.total_amount}₽ "
+                f"({state}, {date})"
+            )
+    await message.answer("\n".join(lines))
+
+
+@router.message(Command("report"))
+async def report_handler(message: Message) -> None:
+    """Export a full Excel report (per-campaign + per-user aggregate)."""
+    if not is_financier(message.from_user.id):
+        await message.answer("Недоступно.")
+        return
+    async with Session() as db:
+        camps = await list_campaigns(db)
+        all_users = await get_all_users(db)
+        user_map = {u.id: u for u in all_users}
+        campaign_rows = []
+        for c in camps:
+            collected = await collected_amount(db, c)
+            confirmed_ids, claimed_ids, unpaid_ids = await list_by_status(db, c.id)
+            campaign_rows.append({
+                "title": c.title,
+                "total": c.total_amount,
+                "per_user": c.per_user_amount,
+                "collected": collected,
+                "confirmed": len(confirmed_ids),
+                "claimed": len(claimed_ids),
+                "unpaid": len(unpaid_ids),
+                "active": c.is_active,
+                "created_at": c.created_at,
+                "due_date": c.due_date,
+            })
+        history = await user_payment_history(db)
+    user_rows = []
+    for uid, total_c, confirmed_c in history:
+        u = user_map.get(uid)
+        user_rows.append({
+            "name": (u.full_name or u.username or str(uid)) if u else str(uid),
+            "campaigns": total_c,
+            "confirmed": confirmed_c,
+        })
+
+    fd, tmp_path = tempfile.mkstemp(prefix="fundbot_report_", suffix=".xlsx")
+    os.close(fd)
+    try:
+        build_excel_report(tmp_path, campaign_rows, user_rows)
+        await message.answer_document(FSInputFile(tmp_path), caption="Отчёт по сборам")
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass

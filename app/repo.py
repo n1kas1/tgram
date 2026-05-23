@@ -12,10 +12,19 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Tuple, Optional, List
 
-from sqlalchemy import select, func, update, delete
+from sqlalchemy import select, func, delete, cast, Integer
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import User, Campaign, CampaignMember, AllowedName
+from .models import (
+    User,
+    Campaign,
+    CampaignMember,
+    AllowedName,
+    Setting,
+    PAYMENT_NONE,
+    PAYMENT_CLAIMED,
+    PAYMENT_CONFIRMED,
+)
 
 
 async def upsert_user(db: AsyncSession, tg_id: int, username: Optional[str], tg_name: Optional[str], financiers: set[int]) -> User:
@@ -129,43 +138,101 @@ async def create_campaign(db: AsyncSession, title: str, total_amount: int, creat
     return camp, user_ids, per_user
 
 
-async def toggle_payment(db: AsyncSession, campaign_id: int, user_id: int, mark: bool) -> bool:
-    """Mark or unmark a payment for a user within a campaign.
-
-    Returns ``True`` if the campaign member existed and the flag was updated.
-    """
-    cm = await db.scalar(select(CampaignMember).where(
+async def _get_member(db: AsyncSession, campaign_id: int, user_id: int) -> Optional[CampaignMember]:
+    return await db.scalar(select(CampaignMember).where(
         CampaignMember.campaign_id == campaign_id, CampaignMember.user_id == user_id
     ))
+
+
+async def claim_payment(db: AsyncSession, campaign_id: int, user_id: int) -> bool:
+    """Participant marks that they have paid (status -> claimed).
+
+    Has no effect if the payment was already confirmed by a financier.
+    Returns ``True`` if the member exists and is now (or was already) claimed.
+    """
+    cm = await _get_member(db, campaign_id, user_id)
     if not cm:
         return False
-    cm.has_paid = mark
-    cm.paid_at = datetime.now(timezone.utc) if mark else None
+    if cm.status == PAYMENT_CONFIRMED:
+        return False
+    cm.status = PAYMENT_CLAIMED
+    cm.claimed_at = datetime.now(timezone.utc)
     await db.commit()
     return True
 
 
-async def campaign_stats(db: AsyncSession, campaign_id: int) -> Tuple[int, int, int]:
-    """Return (total_participants, paid_count, unpaid_count) for a campaign."""
-    total = await db.scalar(select(func.count(CampaignMember.id)).where(CampaignMember.campaign_id == campaign_id))
-    paid = await db.scalar(select(func.count(CampaignMember.id)).where(
-        CampaignMember.campaign_id == campaign_id,
-        CampaignMember.has_paid == True,
-    ))
-    unpaid = total - paid
-    return total, paid, unpaid
+async def unclaim_payment(db: AsyncSession, campaign_id: int, user_id: int) -> bool:
+    """Participant undoes their claim (claimed -> none).
+
+    Has no effect once a financier has confirmed the payment.
+    """
+    cm = await _get_member(db, campaign_id, user_id)
+    if not cm or cm.status == PAYMENT_CONFIRMED:
+        return False
+    cm.status = PAYMENT_NONE
+    cm.claimed_at = None
+    await db.commit()
+    return True
 
 
-async def list_paid_unpaid(db: AsyncSession, campaign_id: int) -> Tuple[list[int], list[int]]:
-    """Return two lists of user IDs: those who have paid and those who have not."""
-    res = await db.execute(select(CampaignMember.user_id, CampaignMember.has_paid).where(
+async def confirm_payment(db: AsyncSession, campaign_id: int, user_id: int) -> bool:
+    """Financier confirms receipt (-> confirmed)."""
+    cm = await _get_member(db, campaign_id, user_id)
+    if not cm:
+        return False
+    cm.status = PAYMENT_CONFIRMED
+    cm.confirmed_at = datetime.now(timezone.utc)
+    await db.commit()
+    return True
+
+
+async def member_status(db: AsyncSession, campaign_id: int, user_id: int) -> Optional[str]:
+    """Return the payment status string for a member, or None if absent."""
+    cm = await _get_member(db, campaign_id, user_id)
+    return cm.status if cm else None
+
+
+async def campaign_stats(db: AsyncSession, campaign_id: int) -> Tuple[int, int, int, int]:
+    """Return (total, confirmed, claimed, unpaid) counts for a campaign."""
+    async def count(*conds) -> int:
+        return await db.scalar(
+            select(func.count(CampaignMember.id)).where(
+                CampaignMember.campaign_id == campaign_id, *conds
+            )
+        ) or 0
+
+    total = await count()
+    confirmed = await count(CampaignMember.status == PAYMENT_CONFIRMED)
+    claimed = await count(CampaignMember.status == PAYMENT_CLAIMED)
+    unpaid = total - confirmed - claimed
+    return total, confirmed, claimed, unpaid
+
+
+async def list_by_status(db: AsyncSession, campaign_id: int) -> Tuple[list[int], list[int], list[int]]:
+    """Return (confirmed_ids, claimed_ids, unpaid_ids) for a campaign."""
+    res = await db.execute(select(CampaignMember.user_id, CampaignMember.status).where(
         CampaignMember.campaign_id == campaign_id
     ))
-    paid: list[int] = []
+    confirmed: list[int] = []
+    claimed: list[int] = []
     unpaid: list[int] = []
-    for uid, ok in res.all():
-        (paid if ok else unpaid).append(uid)
-    return paid, unpaid
+    for uid, status in res.all():
+        if status == PAYMENT_CONFIRMED:
+            confirmed.append(uid)
+        elif status == PAYMENT_CLAIMED:
+            claimed.append(uid)
+        else:
+            unpaid.append(uid)
+    return confirmed, claimed, unpaid
+
+
+async def list_outstanding(db: AsyncSession, campaign_id: int) -> list[int]:
+    """Return user IDs whose payment is not yet confirmed (none + claimed)."""
+    res = await db.execute(select(CampaignMember.user_id).where(
+        CampaignMember.campaign_id == campaign_id,
+        CampaignMember.status != PAYMENT_CONFIRMED,
+    ))
+    return [row[0] for row in res.all()]
 
 
 async def get_active_campaign(db: AsyncSession) -> Optional[Campaign]:
@@ -208,3 +275,86 @@ async def user_status(db: AsyncSession, user_id: int) -> Tuple[Optional[Campaign
 async def get_user(db: AsyncSession, user_id: int) -> Optional[User]:
     """Return a User instance for the given Telegram ID, or None if not found."""
     return await db.scalar(select(User).where(User.id == user_id))
+
+
+# ---------------------------------------------------------------------------
+# Settings (key/value)
+
+
+async def get_setting(db: AsyncSession, key: str) -> Optional[str]:
+    """Return the stored value for ``key`` or None."""
+    return await db.scalar(select(Setting.value).where(Setting.key == key))
+
+
+async def set_setting(db: AsyncSession, key: str, value: str) -> None:
+    """Insert or update a setting value."""
+    s = await db.scalar(select(Setting).where(Setting.key == key))
+    if s is None:
+        db.add(Setting(key=key, value=value))
+    else:
+        s.value = value
+    await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Deadline / reminders
+
+
+async def set_campaign_due_date(db: AsyncSession, campaign_id: int, due_date: Optional[datetime]) -> None:
+    """Set (or clear) the deadline of a campaign."""
+    camp = await db.scalar(select(Campaign).where(Campaign.id == campaign_id))
+    if camp:
+        camp.due_date = due_date
+        await db.commit()
+
+
+async def mark_reminded(db: AsyncSession, campaign_id: int) -> None:
+    """Record that an auto-reminder was just sent for a campaign."""
+    camp = await db.scalar(select(Campaign).where(Campaign.id == campaign_id))
+    if camp:
+        camp.last_reminded_at = datetime.now(timezone.utc)
+        await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# History / reporting
+
+
+async def list_campaigns(db: AsyncSession, limit: Optional[int] = None) -> list[Campaign]:
+    """Return campaigns, newest first."""
+    stmt = select(Campaign).order_by(Campaign.id.desc())
+    if limit:
+        stmt = stmt.limit(limit)
+    res = await db.execute(stmt)
+    return list(res.scalars())
+
+
+async def collected_amount(db: AsyncSession, campaign: Campaign) -> int:
+    """Return the confirmed amount collected so far for a campaign."""
+    confirmed = await db.scalar(
+        select(func.count(CampaignMember.id)).where(
+            CampaignMember.campaign_id == campaign.id,
+            CampaignMember.status == PAYMENT_CONFIRMED,
+        )
+    ) or 0
+    return confirmed * campaign.per_user_amount
+
+
+async def user_payment_history(db: AsyncSession) -> list[Tuple[int, int, int]]:
+    """Aggregate participation per user across all campaigns.
+
+    Returns rows of ``(user_id, campaigns_count, confirmed_count)``.
+    """
+    res = await db.execute(
+        select(
+            CampaignMember.user_id,
+            func.count(CampaignMember.id),
+            func.sum(
+                cast(CampaignMember.status == PAYMENT_CONFIRMED, Integer)
+            ),
+        ).group_by(CampaignMember.user_id)
+    )
+    out: list[Tuple[int, int, int]] = []
+    for uid, total, confirmed in res.all():
+        out.append((uid, int(total or 0), int(confirmed or 0)))
+    return out

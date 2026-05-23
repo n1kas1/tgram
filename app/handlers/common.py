@@ -21,9 +21,9 @@ from aiogram.fsm.state import StatesGroup, State
 from sqlalchemy import select
 
 from ..db import Session
-from ..repo import upsert_user, user_status, is_name_allowed, is_name_taken
+from ..repo import upsert_user, user_status, is_name_allowed, is_name_taken, get_setting
 from ..config import settings
-from ..models import User
+from ..models import User, PAYMENT_NONE, PAYMENT_CLAIMED, PAYMENT_CONFIRMED
 
 
 logger = logging.getLogger(__name__)
@@ -120,12 +120,22 @@ async def status_handler(message: Message) -> None:
             f"{role_line}"
         )
         return
-    status_text = "оплачено" if member.has_paid else "ещё не оплачено"
+    status_text = {
+        PAYMENT_CONFIRMED: "оплата подтверждена",
+        PAYMENT_CLAIMED: "отмечено, ожидает подтверждения",
+    }.get(member.status, "ещё не оплачено")
+    requisites_line = ""
+    if member.status == PAYMENT_NONE:
+        async with Session() as db:
+            req = await get_setting(db, "requisites")
+        if req:
+            requisites_line = f"\nРеквизиты для перевода:\n{html.escape(req)}"
     await message.answer(
         f"Текущий сбор: {title}\n"
         f"Ваша доля: {per_user}₽\n"
         f"Статус оплаты: {status_text}\n"
         f"{role_line}"
+        f"{requisites_line}"
     )
 
 
@@ -156,6 +166,10 @@ async def help_handler(message: Message) -> None:
             "/names – показать список разрешённых фамилий",
             "/addname &lt;фамилия&gt; – добавить фамилию в список",
             "/delname &lt;фамилия&gt; – удалить фамилию из списка",
+            "/setrequisites &lt;текст&gt; – задать реквизиты для перевода",
+            "/deadline &lt;ДД.ММ.ГГГГ&gt; – установить срок сбора",
+            "/history – история сборов",
+            "/report – выгрузить Excel-отчёт",
         ])
     await message.answer("\n".join(lines))
 

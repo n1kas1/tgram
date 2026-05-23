@@ -74,14 +74,24 @@ class Campaign(Base):
     per_user_amount: Mapped[int] = mapped_column(Integer)
     created_by: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Optional payment deadline and the moment the last auto-reminder went out.
+    due_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_reminded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# Payment lifecycle for a campaign member.
+PAYMENT_NONE = "none"          # has not claimed payment yet
+PAYMENT_CLAIMED = "claimed"    # participant says they paid; awaiting confirmation
+PAYMENT_CONFIRMED = "confirmed"  # financier confirmed receipt
 
 
 class CampaignMember(Base):
     """Associates a :class:`User` with a :class:`Campaign`.
 
-    Each participant has a flag indicating whether they have paid their
-    contribution and an optional timestamp when they did so.
+    ``status`` follows the lifecycle none -> claimed -> confirmed.  The
+    participant moves it to ``claimed`` ("I paid") and a financier confirms
+    actual receipt, moving it to ``confirmed``.
     """
 
     __tablename__ = "campaign_members"
@@ -90,9 +100,10 @@ class CampaignMember(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     campaign_id: Mapped[int] = mapped_column(ForeignKey("campaigns.id"))
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"))
-    has_paid: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(16), default=PAYMENT_NONE, server_default=PAYMENT_NONE)
     # Use Optional[datetime] instead of union syntax for Python 3.9 compatibility
-    paid_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    claimed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AllowedName(Base):
@@ -107,3 +118,16 @@ class AllowedName(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(128), unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Setting(Base):
+    """Simple key/value store for runtime-configurable settings.
+
+    Used for values a financier can change without a redeploy, such as the
+    payment requisites shown to participants.
+    """
+
+    __tablename__ = "settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(String(2048))
