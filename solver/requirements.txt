@@ -1,0 +1,6 @@
+# Зависимости нужны только для графического интерфейса (gui.py / main.py).
+# Ядро (function_parser, numerical_methods, task_generator) — чистый stdlib.
+
+PyQt5>=5.15
+matplotlib>=3.5
+numpy>=1.21
