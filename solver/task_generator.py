@@ -2,12 +2,14 @@
 """
 task_generator.py — Человек 3 — генератор задач (поиск корня f(x)=0).
 
-Строит функцию-линейную комбинацию базиса (x^k, exp, ln, sin, cos), у которой
-ГАРАНТИРОВАННО есть вещественный корень: берётся «форма» функции и к ней
-добавляется такая константа, чтобы f обращалась в ноль вблизи заранее выбранной
-точки r. Истинный корень уточняется ЧИСЛЕННО (методом Ньютона) и проверяется
+Строит функцию вида a*x + k*trig(x) + c, у которой ГАРАНТИРОВАННО есть
+вещественный корень: берётся «форма» a*x + k*trig(x) и к ней добавляется такая
+константа c, чтобы f обращалась в ноль вблизи заранее выбранной точки r.
+Истинный корень уточняется ЧИСЛЕННО (методом Ньютона) и проверяется
 (f(x*)~0, f'(x*)!=0 — корень простой), а стартовые точки подбираются так, чтобы
 оба метода (касательных и секущих) из них сходились.
+
+Тип генерации один — без уровней сложности.
 
 Зависимости: stdlib + ядро проекта (function_parser, numerical_methods).
 """
@@ -52,34 +54,18 @@ class TaskGenerator:
     def __init__(self, seed=None):
         self._rng = random.Random(seed)
 
-    def generate(self, complexity: str = "medium") -> Task:
+    def generate(self) -> Task:
         rng = self._rng
         for _ in range(300):
-            use_ln = False
-            # Точка, около которой хотим получить корень (для ln держим x>0).
+            # Точка, около которой хотим получить корень.
             r = round(rng.uniform(-2.0, 2.0), 2)
 
-            # «Форма» функции без свободного члена. Линейный член a*x (a>0)
-            # обеспечивает ненулевую производную и устойчивость методов.
+            # «Форма» функции без свободного члена: линейный член a*x (a>0)
+            # обеспечивает ненулевую производную плюс одна тригонометрическая добавка.
             a = round(rng.uniform(0.8, 2.0), 2)
-            terms = [f"{_fmt(a)}*x"]
+            k = round(rng.uniform(0.5, 2.0) * rng.choice([-1, 1]), 2)
+            base_expr = f"{_fmt(a)}*x " + _term(k, f"{rng.choice(['sin', 'cos'])}(x)")
 
-            if complexity == "easy":
-                pass  # просто a*x + const — линейная функция с одним корнем
-            elif complexity == "medium":
-                k = round(rng.uniform(0.5, 2.0) * rng.choice([-1, 1]), 2)
-                terms.append(_term(k, f"{rng.choice(['sin', 'cos'])}(x)"))
-            else:  # hard: тригонометрия + exp или ln
-                k = round(rng.uniform(0.5, 1.5) * rng.choice([-1, 1]), 2)
-                terms.append(_term(k, f"{rng.choice(['sin', 'cos'])}(x)"))
-                if rng.random() < 0.5:
-                    terms.append(_term(round(rng.uniform(0.05, 0.4), 2), "exp(x)"))
-                else:
-                    terms.append(_term(round(rng.uniform(0.3, 1.5), 2), "ln(x)"))
-                    use_ln = True
-                    r = round(rng.uniform(0.5, 2.5), 2)  # ln определён только при x>0
-
-            base_expr = " ".join(terms)
             try:
                 base = _fp.Function(base_expr)
                 base_at_r = base.f(r)              # значение «формы» в точке r
@@ -95,10 +81,7 @@ class TaskGenerator:
                 continue
 
             # Корень должен быть простым: производная в r заметно ненулевая.
-            try:
-                if abs(func.df(r)) < 0.3:
-                    continue
-            except _fp.EvalError:
+            if abs(func.df(r)) < 0.3:
                 continue
 
             # Уточняем корень численно стартом из r.
@@ -109,23 +92,13 @@ class TaskGenerator:
             if not res.converged or res.x_root is None:
                 continue
             x_root = res.x_root
-            if use_ln and x_root <= 0:
-                continue
-            try:
-                if abs(func.f(x_root)) > 1e-6 or abs(func.df(x_root)) < 0.3:
-                    continue
-            except _fp.EvalError:
+            if abs(func.f(x_root)) > 1e-6 or abs(func.df(x_root)) < 0.3:
                 continue
 
             # стартовые точки рядом с корнем (но не в нём)
             off = round(rng.uniform(0.3, 0.8), 3)
             x0 = round(x_root - off, 4)
             x1 = round(x_root + off * 0.7, 4)
-            if use_ln:
-                x0 = round(max(x0, 0.05), 4)
-                x1 = round(max(x1, 0.1), 4)
-                if x0 == x1:
-                    continue
 
             # оба метода обязаны сходиться из этих точек
             try:
@@ -148,8 +121,7 @@ class TaskGenerator:
 
 if __name__ == "__main__":
     gen = TaskGenerator(seed=1)
-    for comp in ("easy", "medium", "hard"):
-        for _ in range(2):
-            t = gen.generate(comp)
-            print(f"[{comp}] {t.expression}")
-            print(f"    x_root={t.x_root:.5f}  f_root={t.f_root:.2e}  x0={t.x0}  x1={t.x1}")
+    for _ in range(6):
+        t = gen.generate()
+        print(t.expression)
+        print(f"    x_root={t.x_root:.5f}  f_root={t.f_root:.2e}  x0={t.x0}  x1={t.x1}")

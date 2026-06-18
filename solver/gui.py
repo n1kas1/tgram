@@ -90,12 +90,6 @@ METHODS = {
     "Метод касательных (Ньютона)": "newton",
     "Метод секущих": "secant",
 }
-# Подпись сложности -> ключ для TaskGenerator.generate.
-COMPLEXITY = {
-    "Лёгкая": "easy",
-    "Средняя": "medium",
-    "Сложная": "hard",
-}
 
 
 def _fmt(value) -> str:
@@ -158,7 +152,7 @@ class MainWindow(QMainWindow):
         row.addWidget(btn_load)
         v.addLayout(row)
 
-        # Многострочный вывод: f, f', f''.
+        # Многострочный вывод: f, f'.
         self.derivs_view = QTextEdit()
         self.derivs_view.setReadOnly(True)
         self.derivs_view.setMaximumHeight(96)
@@ -172,12 +166,6 @@ class MainWindow(QMainWindow):
     def _build_generator_box(self) -> QGroupBox:
         box = QGroupBox("Генератор задачи (корень f(x)=0)")
         row = QHBoxLayout(box)
-
-        row.addWidget(QLabel("Сложность:"))
-        self.complexity_combo = QComboBox()
-        self.complexity_combo.addItems(list(COMPLEXITY.keys()))
-        self.complexity_combo.setCurrentText("Средняя")
-        row.addWidget(self.complexity_combo)
 
         btn_gen = QPushButton("Сгенерировать")
         btn_gen.clicked.connect(self.on_generate)
@@ -298,13 +286,12 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ events
     def on_parse(self) -> None:
-        """Разобрать выражение и показать f, f', f''."""
+        """Разобрать выражение и показать f, f'."""
         if not self._parse_expr():
             return
         self.derivs_view.setPlainText(
-            f"f(x)   = {self.func.text}\n"
-            f"f'(x)  = {self.func.df_text}\n"
-            f"f''(x) = {self.func.d2f_text}"
+            f"f(x)  = {self.func.text}\n"
+            f"f'(x) = {self.func.df_text}"
         )
 
     def on_load_file(self) -> None:
@@ -332,9 +319,8 @@ class MainWindow(QMainWindow):
 
     def on_generate(self) -> None:
         """Сгенерировать учебную задачу на поиск корня f(x)=0."""
-        complexity = COMPLEXITY.get(self.complexity_combo.currentText(), "medium")
         try:
-            task = self._generator.generate(complexity)
+            task = self._generator.generate()
         except Exception as exc:  # генератор может бросить ValueError/RuntimeError
             QMessageBox.critical(self, "Ошибка генерации", f"Не удалось сгенерировать задачу:\n{exc}")
             return

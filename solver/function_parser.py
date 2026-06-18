@@ -4,7 +4,7 @@ function_parser.py — за этот файл отвечает Человек 1 
 
 Назначение:
     Разобрать строку в ЛИНЕЙНУЮ КОМБИНАЦИЮ базисных функций и дать значение f(x)
-    и АНАЛИТИЧЕСКИЕ производные f'(x), f''(x) — потабличным дифференцированием.
+    и АНАЛИТИЧЕСКУЮ производную f'(x) — потабличным дифференцированием.
 
 Базис (никаких произведений функций, никакого общего AST):
     константа, x^k (k — целое >= 1), exp(x), ln(x)=log(x), sin(x), cos(x).
@@ -210,24 +210,19 @@ def _terms_to_text(terms: list[Term]) -> str:
 
 
 class Function:
-    """Разобранная функция: значение и аналитические производные по линейной комбинации."""
+    """Разобранная функция: значение и аналитическая производная по линейной комбинации."""
 
     def __init__(self, text: str) -> None:
         self._terms = [_parse_term(sign, body) for sign, body in _split_terms(text)]
         self._d1 = _diff_terms(self._terms)
-        self._d2 = _diff_terms(self._d1)
         self.text = _terms_to_text(self._terms)
         self.df_text = _terms_to_text(self._d1)
-        self.d2f_text = _terms_to_text(self._d2)
 
     def f(self, x: float) -> float:
         return _eval_terms(self._terms, x)
 
     def df(self, x: float) -> float:
         return _eval_terms(self._d1, x)
-
-    def d2f(self, x: float) -> float:
-        return _eval_terms(self._d2, x)
 
     def __repr__(self) -> str:
         return f"Function({self.text!r})"
@@ -238,21 +233,15 @@ if __name__ == "__main__":
     g = Function("x^2 - 3*sin(x) + 2")
     print("f      =", g.text)
     print("f'     =", g.df_text)
-    print("f''    =", g.d2f_text)
     x0 = 1.0
     print(f"f({x0})   = {g.f(x0):.6f}")
     print(f"f'({x0})  = {g.df(x0):.6f}")
-    print(f"f''({x0}) = {g.d2f(x0):.6f}")
 
     # Сверка аналитической df с центральной разностью.
     h = 1e-5
     num = (g.f(x0 + h) - g.f(x0 - h)) / (2 * h)
     print(f"df аналит = {g.df(x0):.6f}, df числ = {num:.6f}, |Δ| = {abs(g.df(x0) - num):.2e}")
     assert abs(g.df(x0) - num) < 1e-6, "df не совпала с численной производной"
-
-    # Сверка аналитической d2f с центральной разностью.
-    num2 = (g.f(x0 + h) - 2 * g.f(x0) + g.f(x0 - h)) / (h * h)
-    assert abs(g.d2f(x0) - num2) < 1e-3, "d2f не совпала с численной производной"
 
     # Неявное умножение и константы.
     g2 = Function("2x^3 + 0.5exp(x) - ln(x) + cos(x) - 4")
