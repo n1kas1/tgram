@@ -182,8 +182,10 @@ def _terms_to_text(terms: list[Term]) -> str:
         if kind == "const":
             body, drop_one = "", False  # для const "1" печатать НАДО
         elif kind == "pow":
-            body = "x" if power == 1 else ("1" if power == 0 else f"x^{power}")
-            drop_one = power != 0  # x^0 -> просто 1, коэффициент оставляем
+            # power всегда != 0: парсер требует k>=1, а дифференцирование степени
+            # с power==1 даёт уже const (см. _diff_terms), не pow.
+            body = "x" if power == 1 else f"x^{power}"
+            drop_one = True
         elif kind == "exp":
             body, drop_one = "exp(x)", True
         elif kind == "ln":

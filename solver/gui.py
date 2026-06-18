@@ -21,6 +21,21 @@ import os
 import sys
 
 
+def _qt_plugins_dir() -> str | None:
+    """Каталог plugins внутри пакета PyQt5 (или None, если не найден)."""
+    try:
+        import PyQt5
+
+        base = os.path.dirname(PyQt5.__file__)
+        for sub in ("Qt5", "Qt"):
+            plugins = os.path.join(base, sub, "plugins")
+            if os.path.isdir(plugins):
+                return plugins
+    except Exception:
+        pass
+    return None
+
+
 def _ensure_qt_plugin_path() -> None:
     """Подсказывает Qt путь к платформенному плагину (на Windows — qwindows.dll).
 
@@ -29,19 +44,10 @@ def _ensure_qt_plugin_path() -> None:
     Переменные окружения ставим ДО создания QApplication; setdefault не
     перетирает значение, заданное пользователем вручную.
     """
-    try:
-        import PyQt5
-
-        base = os.path.dirname(PyQt5.__file__)
-        for sub in ("Qt5", "Qt"):
-            plugins = os.path.join(base, sub, "plugins")
-            platforms = os.path.join(plugins, "platforms")
-            if os.path.isdir(platforms):
-                os.environ.setdefault("QT_QPA_PLATFORM_PLUGIN_PATH", platforms)
-                os.environ.setdefault("QT_PLUGIN_PATH", plugins)
-                break
-    except Exception:
-        pass
+    plugins = _qt_plugins_dir()
+    if plugins and os.path.isdir(os.path.join(plugins, "platforms")):
+        os.environ.setdefault("QT_QPA_PLATFORM_PLUGIN_PATH", os.path.join(plugins, "platforms"))
+        os.environ.setdefault("QT_PLUGIN_PATH", plugins)
 
 
 _ensure_qt_plugin_path()
@@ -470,12 +476,7 @@ class MainWindow(QMainWindow):
         else:
             lo, hi = -5.0, 5.0
 
-        # Если функция содержит ln — держим область строго x>0.
-        if "ln" in self.func.text.lower() and lo <= 0:
-            lo = 1e-3
-            if hi <= lo:
-                hi = lo + 5.0
-
+        # Точки вне области определения (напр. ln при x<=0) отсеет _safe_eval ниже.
         grid = np.linspace(lo, hi, 600)
         gx, ys = [], []
         for x in grid:
@@ -532,17 +533,9 @@ def main() -> None:
     app.setStyle("Fusion")
 
     # Доп. подсказка Qt о каталоге плагинов (важно на Windows).
-    try:
-        import PyQt5
-
-        base = os.path.dirname(PyQt5.__file__)
-        for sub in ("Qt5", "Qt"):
-            plugins = os.path.join(base, sub, "plugins")
-            if os.path.isdir(plugins):
-                app.addLibraryPath(plugins)
-                break
-    except Exception:
-        pass
+    plugins = _qt_plugins_dir()
+    if plugins:
+        app.addLibraryPath(plugins)
 
     window = MainWindow()
     window.show()

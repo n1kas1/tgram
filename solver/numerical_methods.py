@@ -81,25 +81,50 @@ def _safe(func, x: float) -> tuple[float | None, str | None]:
     return float(value), None
 
 
+def _check_stop(res: RootResult, func, n: int, x_next: float, dx: float,
+                tol: float) -> tuple[bool, float | None]:
+    """Общий хвост итерации обоих методов после вычисления x_next.
+
+    Возвращает (stop, f_next): stop=True — цикл нужно завершить (res заполнен).
+    Проверяет расходимость (нечисловой x_next), ошибки/NaN/inf в f(x_next)
+    и критерий точности |dx| <= tol ИЛИ |f(x_next)| <= tol. f_next — значение
+    f в x_next (или None, если его не удалось вычислить), чтобы метод мог
+    перенести его в следующую итерацию без повторного вызова func.f.
+    """
+    if not math.isfinite(x_next):
+        res.message = f"остановка на итерации {n}: метод расходится (x вышел за пределы чисел)"
+        return True, None
+    f_next, err = _safe(func.f, x_next)
+    if err is not None:
+        res.message = f"остановка на итерации {n}: {err} (в точке x_next)"
+        return True, None
+    if dx <= tol or abs(f_next) <= tol:
+        res.x_root, res.f_root, res.converged = x_next, f_next, True
+        res.message = f"сошлось за {n} итер.: x={x_next:.12g}, f(x)={f_next:.3e}"
+        return True, f_next
+    return False, f_next
+
+
 def solve_newton(func, x0: float, tol: float = 1e-6, max_iter: int = 1000) -> RootResult:
     """Корень f(x)=0 методом касательных (Ньютона): x_{n+1}=x_n - f/f'.
 
     Останов: |dx| <= tol ИЛИ |f(x_next)| <= tol. Защита: |f'| < ZERO_DENOM
-    (касательная горизонтальна), расходимость (нечисловой x_next), а также
-    ошибки/NaN/inf в f или f'. При неуспехе converged=False.
+    (касательная горизонтальна), расходимость, ошибки/NaN/inf. При неуспехе
+    converged=False.
     """
     res = RootResult("newton", None, None, False, 0, [], "")
     x = float(x0)
+    fx, err = _safe(func.f, x)
+    if err is not None:
+        res.message = f"остановка на старте: {err}"
+        return res
 
     for n in range(1, max_iter + 1):
         res.n_iter = n
-        fx, err = _safe(func.f, x)
-        if err is None:
-            dfx, err = _safe(func.df, x)
+        dfx, err = _safe(func.df, x)
         if err is not None:
             res.message = f"остановка на итерации {n}: {err}"
             return res
-
         if abs(dfx) < ZERO_DENOM:
             res.message = f"остановка на итерации {n}: |f'|<={ZERO_DENOM:.0e} — касательная горизонтальна"
             return res
@@ -108,23 +133,12 @@ def solve_newton(func, x0: float, tol: float = 1e-6, max_iter: int = 1000) -> Ro
         dx = abs(x_next - x)
         res.steps.append({"n": n, "x": x, "fx": fx, "dfx": dfx, "x_next": x_next, "dx": dx})
 
-        if not math.isfinite(x_next):
-            res.message = f"остановка на итерации {n}: метод расходится (x вышел за пределы чисел)"
+        stop, f_next = _check_stop(res, func, n, x_next, dx, tol)
+        if stop:
             return res
+        x, fx = x_next, f_next  # f(x_next) переносим, чтобы не считать f дважды
 
-        f_next, err = _safe(func.f, x_next)
-        if err is not None:
-            res.message = f"остановка на итерации {n}: {err} (в точке x_next)"
-            return res
-
-        if dx <= tol or abs(f_next) <= tol:
-            res.x_root, res.f_root, res.converged = x_next, f_next, True
-            res.message = f"сошлось за {n} итер.: x={x_next:.12g}, f(x)={f_next:.3e}"
-            return res
-        x = x_next
-
-    f_last, _ = _safe(func.f, x)
-    res.x_root, res.f_root = x, f_last
+    res.x_root, res.f_root = x, fx
     res.message = f"не сошлось за {max_iter} итер. (последнее x={x:.12g})"
     return res
 
@@ -133,8 +147,8 @@ def solve_secant(func, x0: float, x1: float, tol: float = 1e-6, max_iter: int = 
     """Корень f(x)=0 методом секущих (производная не нужна).
 
     x_{n+1}=x_n - f(x_n)·(x_n-x_{n-1})/(f(x_n)-f(x_{n-1})). Останов: тот же.
-    Защита: |Δf| < ZERO_DENOM (секущая горизонтальна), расходимость
-    (нечисловой x_next), ошибки/NaN/inf. При неуспехе converged=False.
+    Защита: |Δf| < ZERO_DENOM (секущая горизонтальна), расходимость,
+    ошибки/NaN/inf. При неуспехе converged=False.
     """
     res = RootResult("secant", None, None, False, 0, [], "")
     x_prev, x_curr = float(x0), float(x1)
@@ -158,25 +172,13 @@ def solve_secant(func, x0: float, x1: float, tol: float = 1e-6, max_iter: int = 
         res.steps.append({"n": n, "x_prev": x_prev, "x_curr": x_curr,
                           "f_prev": f_prev, "f_curr": f_curr, "x_next": x_next, "dx": dx})
 
-        if not math.isfinite(x_next):
-            res.message = f"остановка на итерации {n}: метод расходится (x вышел за пределы чисел)"
+        stop, f_next = _check_stop(res, func, n, x_next, dx, tol)
+        if stop:
             return res
-
-        f_next, err = _safe(func.f, x_next)
-        if err is not None:
-            res.message = f"остановка на итерации {n}: {err} (в точке x_next)"
-            return res
-
-        if dx <= tol or abs(f_next) <= tol:
-            res.x_root, res.f_root, res.converged = x_next, f_next, True
-            res.message = f"сошлось за {n} итер.: x={x_next:.12g}, f(x)={f_next:.3e}"
-            return res
-
         x_prev, f_prev = x_curr, f_curr
         x_curr, f_curr = x_next, f_next
 
-    f_last, _ = _safe(func.f, x_curr)
-    res.x_root, res.f_root = x_curr, f_last
+    res.x_root, res.f_root = x_curr, f_curr
     res.message = f"не сошлось за {max_iter} итер. (последнее x={x_curr:.12g})"
     return res
 
